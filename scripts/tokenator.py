@@ -285,7 +285,7 @@ ENABLERS = {"headroom": enable_headroom, "rtk": enable_rtk}
 
 
 # --------------------------------------------------------------------------- #
-# headroom ping runner (the old agent-window-ping, config-driven)
+# headroom ping runner (config-driven)
 # --------------------------------------------------------------------------- #
 
 def run_headroom(cfg: dict) -> int:

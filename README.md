@@ -88,7 +88,7 @@ Config lives at `~/.config/tokenator/config.json`. Edit it by hand or with the
 
 ## headroom details
 
-The old `agent-window-ping` behavior now lives inside `tokenator headroom`.
+The `headroom` strategy runs via `tokenator headroom`.
 
 ```cron
 0 9,14,19 * * * /path/to/tokenator/scripts/tokenator.py headroom >/tmp/tokenator-headroom.out 2>&1
