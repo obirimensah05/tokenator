@@ -31,8 +31,9 @@ again.
    explanation, give the matching blurb below, then re-ask. Do not batch them
    into one wall of questions; let the user decide each.
 
-   - `headroom` - time rolling-window resets to land in work blocks
-   - `caveman` - compressed communication, keep every fact exact
+   - `rolling_ping` - time rolling-window resets to land in work blocks
+   - `headroom` - context compression layer (headroomlabs-ai/headroom)
+   - `caveman` - compressed-communication skill (juliusbrussee/caveman)
    - `rtk` - compress shell-command output (Rust Token Killer)
    - `model_routing` - plan strong, implement cheap
    - `agent_splitting` - fan independent work to parallel subagents
@@ -52,11 +53,15 @@ again.
 Run `scripts/tokenator.py explain <strategy>` to print the canonical text, or
 paraphrase these:
 
-- **headroom** Providers often meter a rolling window that starts the moment you
-  first use the CLI. Ping at the start of work blocks so resets land while you
+- **rolling_ping** Providers often meter a rolling window that starts the moment
+  you first use the CLI. Ping at the start of work blocks so resets land while you
   work, not overnight. Does not raise any limit.
-- **caveman** Agent drops filler and pleasantries, keeps every path, flag, and
-  number exact. Around 75% fewer reply tokens. Reversible per message.
+- **headroom** A context-compression layer (headroomlabs-ai/headroom) that shrinks
+  what is sent to the model 60-95% on JSON, 15-20% on coding context, reversibly.
+  Installs with `pip install headroom-ai[all]` then `headroom wrap <tool>`.
+- **caveman** A skill (juliusbrussee/caveman) that makes the agent answer in terse
+  language, ~65% fewer output tokens, keeping code and errors exact. Installs into
+  every detected agent; toggle with `/caveman` and `normal mode`.
 - **rtk** Local proxy that compresses shell-command output 60-90% before it hits
   context. Needs the `rtk` binary (`brew install rtk`).
 - **model_routing** Strong model for planning and hard reasoning, cheap model for
@@ -68,10 +73,12 @@ paraphrase these:
 
 ## Notes
 
-- The four discipline strategies (`caveman`, `model_routing`, `agent_splitting`,
-  `context_caching`, plus an `rtk` usage hint) are written as a single fenced,
-  reversible block into the tool's instructions file.
-- `headroom` prints a cron line and can install it with consent.
-- `rtk` needs its binary and a hook; enabling it will offer to install both.
+- The three discipline strategies (`model_routing`, `agent_splitting`,
+  `context_caching`) are written as a single fenced, reversible block into the
+  tool's instructions file.
+- `rolling_ping` prints a cron line and can install it with consent.
+- `headroom`, `caveman`, and `rtk` each install their own upstream tool;
+  enabling one offers to run its installer and setup step.
 - Never enable a strategy the user did not approve. Reversal is
-  `scripts/tokenator.py disable <strategy>`.
+  `scripts/tokenator.py disable <strategy>` (and each upstream tool has its own
+  uninstall: `headroom unwrap`, caveman's uninstaller, `rtk` hook removal).

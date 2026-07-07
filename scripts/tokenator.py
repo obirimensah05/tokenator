@@ -5,8 +5,9 @@ tokenator is a small setup helper for coding-agent CLIs (Claude Code, Codex,
 Gemini CLI, Cursor, and friends). It interviews you once, then wires up the
 token-saving strategies you approve so they run as defaults:
 
-  headroom          time rolling-window resets to land inside work blocks
-  caveman           ultra-compressed communication mode
+  rolling_ping      time rolling-window resets to land inside work blocks
+  headroom          context compression layer (headroomlabs-ai/headroom)
+  caveman           compressed-communication skill (juliusbrussee/caveman)
   rtk               compress shell-command output (Rust Token Killer)
   model_routing     plan with a strong model, implement with a cheap one
   agent_splitting   fan independent work out to parallel subagents
@@ -21,7 +22,7 @@ Usage:
   tokenator explain [strategy]    explain a strategy (or all)
   tokenator enable  <strategy>    enable one strategy non-interactively
   tokenator disable <strategy>    disable one strategy
-  tokenator headroom              run the headroom ping now (for cron)
+  tokenator rolling-ping          run the rolling-window ping now (for cron)
   tokenator apply                 re-materialize assets from current config
 """
 from __future__ import annotations
@@ -43,22 +44,40 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 BLOCK_START = "<!-- tokenator:start (managed - do not edit inside) -->"
 BLOCK_END = "<!-- tokenator:end -->"
 
-STRATEGIES = ["headroom", "caveman", "rtk", "model_routing", "agent_splitting", "context_caching"]
+STRATEGIES = [
+    "rolling_ping",
+    "headroom",
+    "caveman",
+    "rtk",
+    "model_routing",
+    "agent_splitting",
+    "context_caching",
+]
 
-# Where each known tool keeps its always-on instruction file, relative to $HOME.
+# Strategies whose behavior is a managed block in the tool's instructions file.
+BEHAVIORAL = ["model_routing", "agent_splitting", "context_caching"]
+
+# Per-tool details: where the always-on instructions file lives (relative to
+# $HOME), how `headroom wrap` names the tool, and how `rtk init` targets it.
 TOOLS = {
-    "claude-code": {"label": "Claude Code", "instructions": ".claude/CLAUDE.md", "rtk_agent": None},
-    "codex": {"label": "OpenAI Codex CLI", "instructions": ".codex/AGENTS.md", "rtk_agent": "cursor"},
-    "gemini": {"label": "Gemini CLI", "instructions": ".gemini/GEMINI.md", "rtk_agent": "gemini"},
-    "cursor": {"label": "Cursor", "instructions": ".cursorrules", "rtk_agent": "cursor"},
-    "other": {"label": "Other / generic agent", "instructions": ".config/tokenator/AGENTS.md", "rtk_agent": None},
+    "claude-code": {"label": "Claude Code", "instructions": ".claude/CLAUDE.md",
+                    "headroom_wrap": "claude", "rtk_init": ["rtk", "init", "-g"]},
+    "codex": {"label": "OpenAI Codex CLI", "instructions": ".codex/AGENTS.md",
+              "headroom_wrap": "codex", "rtk_init": ["rtk", "init", "-g"]},
+    "gemini": {"label": "Gemini CLI", "instructions": ".gemini/GEMINI.md",
+               "headroom_wrap": "gemini", "rtk_init": ["rtk", "init", "-g", "--gemini"]},
+    "cursor": {"label": "Cursor", "instructions": ".cursorrules",
+               "headroom_wrap": "cursor", "rtk_init": ["rtk", "init", "-g", "--agent", "cursor"]},
+    "other": {"label": "Other / generic agent", "instructions": ".config/tokenator/AGENTS.md",
+              "headroom_wrap": None, "rtk_init": ["rtk", "init", "-g"]},
 }
 
 DEFAULT_CONFIG = {
     "tool": "claude-code",
     "instructions_file": str(HOME / ".claude" / "CLAUDE.md"),
     "strategies": {
-        "headroom": {"enabled": False, "cadence": "0 9,14,19 * * *", "clis": ["codex", "claude-code"]},
+        "rolling_ping": {"enabled": False, "cadence": "0 9,14,19 * * *", "clis": ["codex", "claude-code"]},
+        "headroom": {"enabled": False},
         "caveman": {"enabled": False},
         "rtk": {"enabled": False},
         "model_routing": {"enabled": False, "strong": "the strongest model", "cheap": "a cheaper/faster model"},
@@ -68,20 +87,29 @@ DEFAULT_CONFIG = {
 }
 
 EXPLAIN = {
-    "headroom": (
-        "HEADROOM - timing, not bypassing.\n"
+    "rolling_ping": (
+        "ROLLING PING - timing, not bypassing.\n"
         "  Many providers meter you on a *rolling window* that starts the moment you\n"
         "  first use the CLI. If you first touch it at 16:00 and hit the cap at 16:02,\n"
         "  your reset lands late at night when you are asleep. tokenator sends tiny\n"
         "  no-op pings at the start of your work blocks (e.g. 09:00, 14:00, 19:00) so\n"
         "  resets line up with when you actually work. It does NOT raise any limit."
     ),
+    "headroom": (
+        "HEADROOM - context compression layer (github.com/headroomlabs-ai/headroom).\n"
+        "  A local compression layer that shrinks what gets sent to the model: 60-95%\n"
+        "  on JSON, 15-20% on coding-agent context, while preserving accuracy.\n"
+        "  Compression is reversible (originals cached locally, retrievable on demand)\n"
+        "  and it can share context across Claude, Codex, and Gemini. Installs with\n"
+        "  `pip install headroom-ai[all]`, then `headroom wrap <tool>` to inject it."
+    ),
     "caveman": (
-        "CAVEMAN - compressed communication.\n"
-        "  Tells the agent to drop filler, articles, and pleasantries while keeping\n"
-        "  full technical accuracy. Roughly ~75% fewer tokens on the model's replies,\n"
-        "  which also leaves more room in the context window. You can always ask it to\n"
-        "  switch back to full prose for a specific answer."
+        "CAVEMAN - compressed-communication skill (github.com/juliusbrussee/caveman).\n"
+        "  A skill/plugin that makes the agent answer in terse, fragment-based language\n"
+        "  (\"why use many token when few token do trick\") while keeping code, commands,\n"
+        "  and errors exact. Around 65% fewer output tokens. Installs itself into every\n"
+        "  detected agent; toggle in-session with `/caveman` and `normal mode`, pick a\n"
+        "  level with `/caveman [lite|full|ultra]`, see savings with `/caveman-stats`."
     ),
     "rtk": (
         "RTK - Rust Token Killer (github.com/rtk-ai/rtk).\n"
@@ -127,7 +155,6 @@ def load_config() -> dict:
             data = {}
     else:
         data = {}
-    # merge onto defaults so new keys always exist
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     cfg.update({k: v for k, v in data.items() if k != "strategies"})
     for s, sv in data.get("strategies", {}).items():
@@ -158,11 +185,10 @@ def ask_yes_no(prompt: str, explain_key: str | None = None) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# instruction-file block management (tool-agnostic behavioral strategies)
+# instruction-file block (the pure-discipline behavioral strategies)
 # --------------------------------------------------------------------------- #
 
 def behavioral_block(cfg: dict) -> str:
-    """Build the managed instruction block from enabled behavioral strategies."""
     s = cfg["strategies"]
     lines = [
         BLOCK_START,
@@ -171,14 +197,6 @@ def behavioral_block(cfg: dict) -> str:
         "Apply them by default; the user can opt out per-message.",
         "",
     ]
-    if s["caveman"]["enabled"]:
-        lines += [
-            "## Caveman mode (default ON)",
-            "- Answer in a compressed style: drop filler, articles, hedging, and pleasantries.",
-            "- Keep every technical fact, path, flag, and number exact. Terse != vague.",
-            "- Full prose only when the user asks for it.",
-            "",
-        ]
     if s["model_routing"]["enabled"]:
         strong = s["model_routing"].get("strong", "the strongest model")
         cheap = s["model_routing"].get("cheap", "a cheaper model")
@@ -205,12 +223,6 @@ def behavioral_block(cfg: dict) -> str:
             "- Do not re-read a file you already loaded this session unless it changed.",
             "",
         ]
-    if s["rtk"]["enabled"]:
-        lines += [
-            "## RTK (default ON)",
-            "- Prefer running noisy shell commands through `rtk` (e.g. `rtk git status`, `rtk cargo test`, `rtk ls .`) so their output is compressed before it enters context.",
-            "",
-        ]
     lines.append(BLOCK_END)
     return "\n".join(lines).rstrip() + "\n"
 
@@ -220,11 +232,7 @@ def write_block(cfg: dict) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     existing = target.read_text() if target.exists() else ""
     block = behavioral_block(cfg)
-
-    has_behavioral = any(
-        cfg["strategies"][k]["enabled"]
-        for k in ("caveman", "model_routing", "agent_splitting", "context_caching", "rtk")
-    )
+    has_behavioral = any(cfg["strategies"][k]["enabled"] for k in BEHAVIORAL)
 
     if BLOCK_START in existing and BLOCK_END in existing:
         pre = existing.split(BLOCK_START)[0].rstrip("\n")
@@ -241,54 +249,84 @@ def write_block(cfg: dict) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# per-strategy enablers (side effects beyond the instruction block)
+# per-strategy enablers (external installs / side effects)
 # --------------------------------------------------------------------------- #
 
-def enable_headroom(cfg: dict, interactive: bool) -> None:
-    hc = cfg["strategies"]["headroom"]
-    script = Path(__file__).resolve().parent.parent / "scripts" / "tokenator.py"
-    cron = f'{hc["cadence"]} {script} headroom >/tmp/tokenator-headroom.out 2>&1'
-    print("\n  headroom: add this to `crontab -e` to ping your work blocks:")
+def enable_rolling_ping(cfg: dict, interactive: bool) -> None:
+    rc = cfg["strategies"]["rolling_ping"]
+    script = Path(__file__).resolve()
+    cron = f'{rc["cadence"]} {script} rolling-ping >/tmp/tokenator-rolling-ping.out 2>&1'
+    print("\n  rolling_ping: add this to `crontab -e` to ping your work blocks:")
     print(f"    {cron}")
     if interactive and shutil.which("crontab") and ask_yes_no("  install this crontab line now?"):
         try:
             current = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
         except Exception:
             current = ""
-        if "tokenator.py headroom" in current or "tokenator headroom" in current:
-            print("  headroom cron already present, leaving it.")
+        if "tokenator.py rolling-ping" in current or "tokenator rolling-ping" in current:
+            print("  rolling-ping cron already present, leaving it.")
         else:
             new = (current.rstrip() + "\n" if current.strip() else "") + cron + "\n"
             subprocess.run(["crontab", "-"], input=new, text=True)
             print("  installed.")
 
 
+def enable_headroom(cfg: dict, interactive: bool) -> None:
+    if not shutil.which("headroom"):
+        print("\n  headroom not found. Install it with:")
+        print('    pip install "headroom-ai[all]"')
+        if interactive and shutil.which("pip") and ask_yes_no('  run `pip install "headroom-ai[all]"` now?'):
+            subprocess.run(["pip", "install", "headroom-ai[all]"])
+    if shutil.which("headroom"):
+        wrap = TOOLS.get(cfg["tool"], {}).get("headroom_wrap")
+        if not wrap:
+            print("  run `headroom wrap <your-tool>` to inject the compression layer.")
+        elif not interactive or ask_yes_no(f"  run `headroom wrap {wrap}` now?"):
+            subprocess.run(["headroom", "wrap", wrap])
+        print("  (undo any time with `headroom unwrap <tool>`.)")
+
+
+def enable_caveman(cfg: dict, interactive: bool) -> None:
+    if shutil.which("caveman"):
+        print("  caveman already installed.")
+        return
+    url = "https://raw.githubusercontent.com/JuliusBrussee/caveman/main/install.sh"
+    print("\n  caveman installs itself into every detected agent via:")
+    print(f"    curl -fsSL {url} | bash")
+    if not interactive:
+        return
+    if shutil.which("curl") and shutil.which("bash") and ask_yes_no("  run the caveman installer now?"):
+        subprocess.run(f"curl -fsSL {url} | bash", shell=True)
+        print("  toggle in-session with `/caveman` and `normal mode`.")
+
+
 def enable_rtk(cfg: dict, interactive: bool) -> None:
-    if shutil.which("rtk"):
-        print("  rtk binary found.")
-    else:
+    if not shutil.which("rtk"):
         print("\n  rtk binary not found. Install it with one of:")
         print("    brew install rtk")
         print("    curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh")
-        if not interactive:
-            return
-        if shutil.which("brew") and ask_yes_no("  run `brew install rtk` now?"):
+        if interactive and shutil.which("brew") and ask_yes_no("  run `brew install rtk` now?"):
             subprocess.run(["brew", "install", "rtk"])
     if shutil.which("rtk"):
-        agent = TOOLS.get(cfg["tool"], {}).get("rtk_agent")
-        cmd = ["rtk", "init", "-g"] + (["--agent", agent] if agent else [])
+        cmd = TOOLS.get(cfg["tool"], {}).get("rtk_init", ["rtk", "init", "-g"])
         if not interactive or ask_yes_no(f"  run `{' '.join(cmd)}` to install the rtk hook?"):
             subprocess.run(cmd)
 
 
-ENABLERS = {"headroom": enable_headroom, "rtk": enable_rtk}
+# Strategies with an install/side-effect beyond the instruction block.
+ENABLERS = {
+    "rolling_ping": enable_rolling_ping,
+    "headroom": enable_headroom,
+    "caveman": enable_caveman,
+    "rtk": enable_rtk,
+}
 
 
 # --------------------------------------------------------------------------- #
-# headroom ping runner (config-driven)
+# rolling-ping runner (config-driven)
 # --------------------------------------------------------------------------- #
 
-def run_headroom(cfg: dict) -> int:
+def run_rolling_ping(cfg: dict) -> int:
     import datetime as _dt
 
     ping = os.getenv(
@@ -296,7 +334,7 @@ def run_headroom(cfg: dict) -> int:
         "ping: start or advance the rolling usage window; reply OK only; no work needed",
     )
     timeout = int(os.getenv("TOKENATOR_PING_TIMEOUT", "120"))
-    log = Path(os.getenv("TOKENATOR_HEADROOM_LOG", str(HOME / ".tokenator-headroom.log")))
+    log = Path(os.getenv("TOKENATOR_ROLLING_PING_LOG", str(HOME / ".tokenator-rolling-ping.log")))
     log.parent.mkdir(parents=True, exist_ok=True)
 
     commands = {
@@ -304,7 +342,7 @@ def run_headroom(cfg: dict) -> int:
         "claude-code": ["claude", "--print", "--permission-mode", "plan",
                         "--model", os.getenv("TOKENATOR_CLAUDE_MODEL", "sonnet"), ping],
     }
-    wanted = cfg["strategies"]["headroom"].get("clis", ["codex", "claude-code"])
+    wanted = cfg["strategies"]["rolling_ping"].get("clis", ["codex", "claude-code"])
     results = []
     for name in wanted:
         cmd = commands.get(name)
@@ -329,7 +367,7 @@ def run_headroom(cfg: dict) -> int:
         f.write(json.dumps({"ts": _dt.datetime.now(_dt.timezone.utc).isoformat(), "results": results},
                            ensure_ascii=False) + "\n")
     if results and not any(r["ok"] for r in results):
-        print(f"tokenator headroom: all enabled pings failed. See {log}")
+        print(f"tokenator rolling-ping: all enabled pings failed. See {log}")
         return 1
     return 0
 
@@ -353,7 +391,6 @@ def cmd_setup(_argv: list[str]) -> int:
         "\nI'll ask about each one. Answer y, n, or ? for an explanation.\n"
     )
 
-    # which tool are we wiring behavioral defaults into
     tools = list(TOOLS.keys())
     print("Which coding-agent CLI should I set the defaults for?")
     for i, t in enumerate(tools, 1):
@@ -365,11 +402,12 @@ def cmd_setup(_argv: list[str]) -> int:
             break
         print("  invalid choice")
     cfg["instructions_file"] = str(HOME / TOOLS[cfg["tool"]]["instructions"])
-    print(f"  -> defaults will be written to {cfg['instructions_file']}\n")
+    print(f"  -> discipline defaults will be written to {cfg['instructions_file']}\n")
 
     prompts = {
-        "headroom": "Enable HEADROOM (time your rolling-window resets to your work blocks)?",
-        "caveman": "Enable CAVEMAN (compressed communication, ~75% fewer reply tokens)?",
+        "rolling_ping": "Enable ROLLING PING (time your rolling-window resets to your work blocks)?",
+        "headroom": "Enable HEADROOM (context compression layer, headroomlabs-ai/headroom)?",
+        "caveman": "Enable CAVEMAN (compressed-communication skill, juliusbrussee/caveman)?",
         "rtk": "Enable RTK (compress shell-command output, -60 to -90% tokens)?",
         "model_routing": "Enable MODEL ROUTING (plan with a strong model, implement with a cheap one)?",
         "agent_splitting": "Enable AGENT SPLITTING (fan independent work out to parallel subagents)?",
@@ -380,12 +418,13 @@ def cmd_setup(_argv: list[str]) -> int:
 
     save_config(cfg)
     print("\nApplying...")
-    target = write_block(cfg)
-    if any(cfg["strategies"][k]["enabled"] for k in
-           ("caveman", "model_routing", "agent_splitting", "context_caching", "rtk")):
-        print(f"  wrote behavioral defaults to {target}")
-    for s in ("headroom", "rtk"):
-        if cfg["strategies"][s]["enabled"]:
+    if any(cfg["strategies"][k]["enabled"] for k in BEHAVIORAL):
+        target = write_block(cfg)
+        print(f"  wrote discipline defaults to {target}")
+    else:
+        write_block(cfg)
+    for s in STRATEGIES:
+        if cfg["strategies"][s]["enabled"] and s in ENABLERS:
             ENABLERS[s](cfg, interactive=True)
 
     print("\nDone. Enabled strategies:")
@@ -433,7 +472,7 @@ def cmd_toggle(argv: list[str], enabled: bool) -> int:
 def cmd_apply(_argv: list[str]) -> int:
     cfg = load_config()
     target = write_block(cfg)
-    print(f"re-applied behavioral defaults to {target}")
+    print(f"re-applied discipline defaults to {target}")
     return 0
 
 
@@ -454,8 +493,8 @@ def main(argv: list[str]) -> int:
         return cmd_toggle(rest, False)
     if cmd == "apply":
         return cmd_apply(rest)
-    if cmd == "headroom":
-        return run_headroom(load_config())
+    if cmd in ("rolling-ping", "rolling_ping"):
+        return run_rolling_ping(load_config())
     if cmd in ("-h", "--help", "help"):
         print(__doc__)
         return 0
