@@ -1,7 +1,8 @@
 {
-  "name": "codex-claude-code-window-pings",
+  "name": "tokenator-headroom-pings",
   "schedule": "0 9,14,19 * * *",
-  "script": "agent-window-ping.py",
+  "script": "tokenator.py",
+  "args": ["headroom"],
   "no_agent": true,
-  "prompt": "Script-only job: run ~/.hermes/scripts/agent-window-ping.py to start or advance Codex and Claude Code rolling usage windows. The script logs to disk and stays silent unless every enabled ping fails."
+  "prompt": "Script-only job: run ~/.hermes/scripts/tokenator.py headroom to start or advance Codex and Claude Code rolling usage windows. The script logs to disk and stays silent unless every enabled ping fails."
 }

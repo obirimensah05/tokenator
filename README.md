@@ -1,169 +1,114 @@
-# Agent Window Ping
+# tokenator
 
-A tiny scheduler script for **rolling usage windows** on coding-agent CLIs like **OpenAI Codex CLI** and **Claude Code**.
+Get more out of your tokens. Tool-agnostic.
 
-The idea:
+`tokenator` is a small setup helper for coding-agent CLIs (Claude Code, OpenAI
+Codex CLI, Gemini CLI, Cursor, and friends). It interviews you once, then wires
+up the token-saving strategies you approve so they run as your defaults.
 
-> Do not wait until deep work starts to open the model window.  
-> Start or advance the window before your work block, so the reset lands when you are actually working.
+It does **not** bypass hard limits, monthly spend caps, provider terms, auth, or
+rate limits. It saves tokens through three honest levers: timing, output
+compression, and prompting discipline.
 
-This is the operational version of the “unlimited tokens through time-window manipulation” idea.
+## The interview
 
-Important: this does **not** bypass hard limits, monthly spend caps, provider terms, auth, or rate limits. It only helps with timing when a provider uses rolling windows.
-
-## Why this exists
-
-If your provider gives you a rolling window, the moment you first use the CLI matters.
-
-Bad pattern:
+Run it and it asks one gateway question first, then one question per strategy.
+Answer `y`, `n`, or `?` for an explanation of that strategy before you decide.
 
 ```text
-16:00 start work
-16:02 hit limit
-reset lands late at night
+Do you want to get effectively more out of your tokens? [y/n/?] y
+
+Which coding-agent CLI should I set the defaults for?
+  1) Claude Code   2) Codex   3) Gemini CLI   4) Cursor   5) Other
+
+Enable HEADROOM (time your rolling-window resets to your work blocks)? [y/n/?]
+Enable CAVEMAN (compressed communication, ~75% fewer reply tokens)?     [y/n/?]
+Enable RTK (compress shell-command output, -60 to -90% tokens)?         [y/n/?]
+Enable MODEL ROUTING (plan strong, implement cheap)?                    [y/n/?]
+Enable AGENT SPLITTING (fan work out to parallel subagents)?            [y/n/?]
+Enable CONTEXT CACHING (don't reload the same context again)?           [y/n/?]
 ```
 
-Better pattern:
+Whatever you say yes to becomes a default. Say no and nothing is touched.
 
-```text
-09:00 tiny ping
-14:00 tiny ping
-19:00 tiny ping
-```
+## The six strategies
 
-Now your resets are more likely to land inside useful work blocks instead of while you are asleep.
+| Strategy | Lever | What it does |
+|---|---|---|
+| `headroom` | timing | Sends tiny no-op pings at the start of your work blocks so rolling-window resets land while you are working, not while you sleep. |
+| `caveman` | discipline | Tells the agent to answer in a compressed style (no filler) while keeping every fact exact. |
+| `rtk` | compression | Installs [rtk](https://github.com/rtk-ai/rtk) (Rust Token Killer), a local proxy that compresses shell-command output by 60-90% before it enters context. |
+| `model_routing` | discipline | Plan and reason with a strong model, implement the mechanical parts with a cheaper one. |
+| `agent_splitting` | discipline | Fan independent work out to parallel subagents so no single context carries everything. |
+| `context_caching` | discipline | Keep stable, repeated context up front so it is served from a prompt cache instead of re-billed every turn. |
 
-## What the script does
-
-`scripts/agent-window-ping.py` runs tiny no-op prompts against enabled CLIs:
-
-- `codex exec ... "ping: ... reply OK only"`
-- `claude --print ... "ping: ... reply OK only"`
-
-It writes logs to a file and stays quiet on normal/partial success so cron does not spam you.
-
-Default log path:
-
-```text
-~/.agent-window-ping.log
-```
+The four discipline strategies are written as a managed block into your tool's
+always-on instructions file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`,
+`.cursorrules`, ...). `headroom` prints or installs a cron line. `rtk` installs
+the binary and its hook.
 
 ## Install
 
 ```bash
-git clone https://github.com/obirimensah05/agent-window-ping.git
-cd agent-window-ping
-chmod +x scripts/agent-window-ping.py
+git clone https://github.com/obirimensah05/tokenator.git
+cd tokenator
+chmod +x scripts/tokenator.py
+
+# optional: put it on your PATH
+ln -s "$PWD/scripts/tokenator.py" /usr/local/bin/tokenator
+
+tokenator setup
 ```
 
-Verify your CLIs work:
+Only Python 3 is required for the interview itself. Individual strategies pull
+in what they need (`rtk`, a `crontab`) at the moment you enable them.
+
+## Let your agent set it up for you
+
+tokenator is designed so a coding agent can run the interview *for* you. Point
+your agent at [`AGENTS.md`](AGENTS.md) (or just say "set up tokenator") and it
+will ask you the same yes/no questions, explain any you want explained, and
+enable only what you approve. That is why it is tool-agnostic: the agent doing
+the asking can be any of them.
+
+## Commands
 
 ```bash
-codex --version
-claude --version
+tokenator setup                 # run the interview
+tokenator status                # show what is enabled
+tokenator explain [strategy]    # explain one strategy, or all of them
+tokenator enable  <strategy>    # turn one on non-interactively
+tokenator disable <strategy>    # turn one off
+tokenator apply                 # re-write the instruction block from config
+tokenator headroom              # run the headroom ping now (this is the cron entry)
 ```
 
-Run once manually:
+Config lives at `~/.config/tokenator/config.json`. Edit it by hand or with the
+`enable`/`disable` commands; run `tokenator apply` to re-materialize.
 
-```bash
-./scripts/agent-window-ping.py
+## headroom details
 
-tail -n 1 ~/.agent-window-ping.log
-```
-
-## Schedule with normal cron
-
-Edit crontab:
-
-```bash
-crontab -e
-```
-
-Example cadence:
+The old `agent-window-ping` behavior now lives inside `tokenator headroom`.
 
 ```cron
-0 9,14,19 * * * /path/to/agent-window-ping/scripts/agent-window-ping.py >/tmp/agent-window-ping.out 2>&1
+0 9,14,19 * * * /path/to/tokenator/scripts/tokenator.py headroom >/tmp/tokenator-headroom.out 2>&1
 ```
 
-That runs daily at:
+It runs tiny read-only, plan-mode pings, logs to `~/.tokenator-headroom.log`,
+and stays quiet unless every enabled ping fails so cron does not spam you. Tune
+the cadence in the config to your real work blocks. Do not run it every hour;
+the pings themselves have session overhead.
 
-```text
-09:00
-14:00
-19:00
-```
-
-Tune the times to your actual work blocks.
-
-## Schedule with Hermes Agent cron
-
-If you use [Hermes Agent](https://github.com/NousResearch/hermes-agent), you can run it as a script-only cron job.
-
-Copy the script into Hermes' script directory:
-
-```bash
-mkdir -p ~/.hermes/scripts
-cp scripts/agent-window-ping.py ~/.hermes/scripts/
-chmod +x ~/.hermes/scripts/agent-window-ping.py
-```
-
-Then create a Hermes cron job with:
-
-```text
-schedule: 0 9,14,19 * * *
-script: agent-window-ping.py
-no_agent: true
-```
-
-`no_agent: true` matters because you do not want to spend Hermes model tokens just to run a shell script.
-
-## Configuration
-
-Everything is controlled by environment variables.
-
-| Env var | Default | Purpose |
-|---|---|---|
-| `AGENT_WINDOW_PING_LOG` | `~/.agent-window-ping.log` | Log file path |
-| `AGENT_WINDOW_PING_TIMEOUT` | `120` | Per-command timeout in seconds |
-| `AGENT_WINDOW_PING_PROMPT` | no-op ping prompt | Prompt sent to each CLI |
-| `AGENT_WINDOW_PING_CODEX_ENABLED` | `1` | Set `0` to disable Codex |
-| `AGENT_WINDOW_PING_CLAUDE_ENABLED` | `1` | Set `0` to disable Claude Code |
-| `AGENT_WINDOW_PING_CLAUDE_MODEL` | `sonnet` | Claude Code model alias |
-| `AGENT_WINDOW_PING_CODEX_CMD` | built-in safe command | Override Codex command entirely |
-| `AGENT_WINDOW_PING_CLAUDE_CMD` | built-in safe command | Override Claude command entirely |
-
-Example: Codex only.
-
-```bash
-AGENT_WINDOW_PING_CLAUDE_ENABLED=0 ./scripts/agent-window-ping.py
-```
-
-Example: custom Codex model/profile.
-
-```bash
-AGENT_WINDOW_PING_CODEX_CMD='codex exec --skip-git-repo-check --ephemeral --sandbox read-only -m gpt-5.4 "ping: reply OK only"' \
-  ./scripts/agent-window-ping.py
-```
-
-## Recommended cadence
-
-For a typical operator day:
-
-```text
-09:00 morning open
-14:00 afternoon reset alignment
-19:00 evening deep-work alignment
-```
-
-Do not run it every hour by default. These CLIs still have session overhead, so the ping itself may consume tokens.
+Environment overrides: `TOKENATOR_PING_PROMPT`, `TOKENATOR_PING_TIMEOUT`,
+`TOKENATOR_HEADROOM_LOG`, `TOKENATOR_CLAUDE_MODEL`, `TOKENATOR_CONFIG_DIR`.
 
 ## Safety notes
 
-The default commands are intentionally low-risk:
+- Nothing here defeats a provider's limits, caps, or terms. Read them.
+- `headroom` pings are read-only, plan-mode, and ask for `OK only`.
+- The instruction block is fenced by markers and fully reversible (`tokenator disable`).
+- You are responsible for your own account usage.
 
-- Codex uses `--sandbox read-only`
-- Claude uses `--permission-mode plan`
-- The prompt asks for `OK only`
-- The script does not modify repositories
+## License
 
-But you are still responsible for your provider usage and account limits.
+MIT. See [LICENSE](LICENSE).
