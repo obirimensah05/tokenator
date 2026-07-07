@@ -271,12 +271,23 @@ def enable_rolling_ping(cfg: dict, interactive: bool) -> None:
             print("  installed.")
 
 
+def _py_installer() -> list[str] | None:
+    """Pick an available Python installer, preferring isolated pipx."""
+    if shutil.which("pipx"):
+        return ["pipx", "install"]
+    for pip in ("pip3", "pip"):
+        if shutil.which(pip):
+            return [pip, "install"]
+    return None
+
+
 def enable_headroom(cfg: dict, interactive: bool) -> None:
     if not shutil.which("headroom"):
-        print("\n  headroom not found. Install it with:")
-        print('    pip install "headroom-ai[all]"')
-        if interactive and shutil.which("pip") and ask_yes_no('  run `pip install "headroom-ai[all]"` now?'):
-            subprocess.run(["pip", "install", "headroom-ai[all]"])
+        installer = _py_installer()
+        print("\n  headroom not found. Install it with (pipx keeps it isolated):")
+        print('    pipx install "headroom-ai[all]"   # or: pip3 install "headroom-ai[all]"')
+        if interactive and installer and ask_yes_no(f'  run `{" ".join(installer)} "headroom-ai[all]"` now?'):
+            subprocess.run(installer + ["headroom-ai[all]"])
     if shutil.which("headroom"):
         wrap = TOOLS.get(cfg["tool"], {}).get("headroom_wrap")
         if not wrap:
